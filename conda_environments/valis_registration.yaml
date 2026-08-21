@@ -1,0 +1,97 @@
+# Conda environment for the MIL pipeline plus standalone VALIS registration.
+#
+#   conda env create -f environment.yml     # or: mamba env create -f environment.yml
+#   conda activate sprintr_mill
+#   python -m valis_reg scan /data/datasets/new/new --dataset umea
+#
+# Registration additions are marked below. If a machine only trains and never registers,
+# everything under "registration only" can be dropped — that is the bulk of the install.
+name: sprintr_valis_reg
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  # valis-wsi pins numpy<2.0.0. Without the upper bound conda resolves numpy 2.x and the
+  # first `import valis` fails on the ABI break, long after the env appears to build fine.
+  - anndata
+
+  - numpy>=1.26,<2
+  - pandas>=2.2
+  - h5py>=3.10
+  - pyyaml>=6
+  # valis-wsi requires torch>=2.7.1 and torchvision>=0.20.1. Pin at least that here, or pip
+  # installs a second torch from PyPI on top of conda's and you end up with two in one env.
+  - pytorch>=2.7
+  - torchvision>=0.20.1
+  - pytorch-cuda>=12   # fill in from `conda search` output above
+  - scikit-learn>=1.4
+  - scipy
+  - tqdm>=4.66
+  - matplotlib>=3.8
+  - openslide-python>=1.3
+  # pyvips brings libvips, which both reads slides (via its openslide module) and writes
+  # the warped pyramid TIFFs. Verified on libvips 8.18.3 + openslide 4.0.1.
+  #
+  # conda-forge's libvips may emit "unable to load vips-magick.dylib ... libMagickCore-7
+  # .Q16HDRI.10" at startup: libvips is built against ImageMagick soversion 10 while
+  # imagemagick 7.1.2+ ships 11. Harmless here — that module only adds ImageMagick-backed
+  # loaders for formats we never touch, and TIFF writing is built into libvips core. To
+  # silence it: rm "$CONDA_PREFIX/lib/vips-modules-8.18/vips-magick.dylib"
+  - pyvips>=2.2
+  - ipykernel>=6
+  - ipywidgets>=8
+  - plotly
+  - pip
+
+  # --- registration only ----------------------------------------------------
+  # VALIS reads slides through Bio-Formats, which is Java: without a JDK on PATH the first
+  # fit dies inside jpype with an opaque JVM error. conda-forge's openjdk sets JAVA_HOME on
+  # activation, which is the reliable way to get one on a cluster node.
+  - openjdk>=11
+
+  # Feature detection and the geometry VALIS fits with. kornia carries DISK and LightGlue
+  # (the detector/matcher pair this pipeline is tuned for); scikit-image supplies the
+  # SimilarityTransform VALIS registers with. Both bounds are valis-wsi's own minimums.
+  - kornia>=0.7.3
+  - scikit-image>=0.24
+  - pywavelets
+
+  # NOTE: opencv is deliberately NOT listed here. VALIS needs the *contrib* modules (it
+  # builds a DAISY detector via cv2.xfeatures2d at import time) and pins
+  # opencv-contrib-python-headless==4.9.0.80 exactly, which pip installs below. Adding
+  # conda's opencv as well puts a second distribution owning the same `cv2` module name in
+  # the env; the two shadow each other and which wins depends on import order.
+  #
+  # pyvips above is load-bearing for registration, not just viewing: the warped slides are
+  # written through it as tiled pyramid TIFFs. The conda package bundles libvips, which the
+  # pip wheel does not.
+  - optuna
+  - Pillow
+  - pip:
+      - optuna-dashboard
+
+      # --- registration only ---
+      # VALIS itself. Not on conda-forge, so it comes from PyPI and brings its own tree with
+      # it: opencv-contrib-python-headless, aicspylibczi, bioformats_jar, jpype, scyjava,
+      # simpleitk, shapely and the rest. Let pip resolve all of those — do not also name
+      # them above, or conda and pip each install a copy.
+      #
+      # Do NOT pin any of them to a git URL. aicspylibczi in particular publishes prebuilt
+      # wheels for every platform we use; forcing it to a git checkout makes pip compile it,
+      # which needs cmake and downloads googletest from GitHub mid-build — a step that fails
+      # outright when GitHub rate-limits you (HTTP 429). Plain PyPI resolution takes the
+      # wheel and never touches a compiler.
+      - valis-wsi>=1.0
+
+# Two native libraries registration needs that pip cannot provide, both handled above:
+#
+#   libvips      — ships with the pyvips conda package. If you ever switch to the pip wheel,
+#                  install libvips at the OS layer instead.
+#   libopenslide — ships with openslide-python from conda-forge. Required to read .mrxs.
+#
+# MIRAX note: a .mrxs file is only an index; the pixels live in a sibling directory of the
+# same name. `python -m valis_reg link` keeps the pair together when it publishes the raw
+# variant — see valis_reg/link.py.
+
