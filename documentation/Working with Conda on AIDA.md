@@ -1,4 +1,218 @@
+# Packaging and Installing Conda Environments on AIDA
 
+## Overview
+
+AIDA nodes don't have direct internet access (they're air-gapped), so you can't just run `conda env create` directly on a node. Instead, the workflow is:
+
+1. Build the Conda environment on a machine that **does** have internet access.
+2. Package ("pack") that environment into a single `.tar.gz` file.
+3. Upload the file to shared storage on AIDA.
+4. Unpack and activate it locally on each AIDA node that needs it.
+
+This guide walks through that process end to end.
+
+---
+
+## Prerequisites
+
+- **Conda** installed on a non-air-gapped machine (i.e. one with internet access).
+- **x86_64 architecture is required.** AIDA nodes run on x86, so the environment must be built for x86 too — it will not work if built on an ARM machine.
+  - If you're on **Apple Silicon (M1/M2/M3/etc.)**, you cannot build a working environment directly. Instead:
+    - Use an x86 machine, **or**
+    - Build inside a Docker container running an x86 image (e.g. via `--platform linux/amd64`), **or**
+    - Use a remote x86 server.
+
+---
+
+## 1. Create the Conda Environment
+
+You'll need an `environment.yml` file describing the packages your environment needs. If you don't already have one, it typically looks something like:
+
+```yaml
+name: sprintr_mill
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - pytorch
+  ...
+```
+
+Create the environment from it:
+
+```bash
+conda env create -f environment.yml
+```
+
+The environment's name is taken from the `name:` field inside the `.yml` file (in this example, `sprintr_mill`).
+
+Activate it:
+
+```bash
+conda activate sprintr_mill
+```
+
+### Save an exact record of installed packages (optional but recommended)
+
+Once the environment is set up, it's good practice to export the exact list of installed packages. This gives you a reproducible record separate from your original `environment.yml`:
+
+```bash
+conda env export --no-builds > sprintr_mill-v1.yml
+```
+
+`--no-builds` omits build-specific hashes so the file is more portable across systems.
+
+---
+
+## 2. Package the Environment with conda-pack
+
+`conda-pack` bundles an entire Conda environment — all its files and dependencies — into a single archive that can be copied to another machine and used **without needing Conda installed there**. This is what makes it possible to run the environment on an air-gapped AIDA node.
+
+### Install conda-pack
+
+```bash
+conda install -c conda-forge conda-pack
+```
+
+### Create the archive
+
+```bash
+conda-pack -n sprintr_mill -o sprintr_mill-v1.tar.gz
+```
+
+This converts the environment named `sprintr_mill` into a portable file called `sprintr_mill-v1.tar.gz`.
+
+> **Tip:** Include a version number in the filename (`-v1`, `-v2`, etc.) so you can track changes over time without overwriting older environments still in use.
+
+---
+
+## 3. Upload the Archive to AIDA
+
+Use `scp` to copy the packed environment to shared storage on AIDA, so any node can access it:
+
+```bash
+scp sprintr_mill-v1.tar.gz login:/data/datasets/envs
+```
+
+> Replace `/data/datasets/envs` with the actual shared environment storage path if different, and `login` with your usual way of reaching the AIDA login node.
+
+The idea is that the archive is uploaded **once** to shared storage, and each individual node then sets up its own local copy of the environment from it (see next step).
+
+---
+
+## 4. Install the Environment on an AIDA Node
+
+Each node needs its own local, unpacked copy of the environment — this must be repeated **per node**, not just once for the whole cluster.
+
+> **Why per node?** The unpacked Python environment should live on each node's local disk (not shared storage) for performance and path-correctness reasons. Automating this step via Ansible is planned for the future, but for now it's manual.
+
+### 4.1 Create a directory and extract the archive
+
+`/opt/envs` may not exist yet on a given node — create it if needed:
+
+```bash
+mkdir -p /opt/envs/sprintr_mill-v1
+tar -xzf sprintr_mill-v1.tar.gz -C /opt/envs/sprintr_mill-v1
+```
+
+### 4.2 Run conda-unpack
+
+The archive contains hardcoded paths from the machine it was built on. `conda-unpack` fixes these so the environment works correctly in its new location:
+
+```bash
+/opt/envs/sprintr_mill-v1/bin/python /opt/envs/sprintr_mill-v1/bin/conda-unpack
+```
+
+### 4.3 Verify it works
+
+```bash
+/opt/envs/sprintr_mill-v1/bin/python - <<'PY'
+import openslide, pyvips, torch, numpy, anndata
+print('imports ok')
+print('torch', torch.__version__, 'cuda available:', torch.cuda.is_available())
+if torch.cuda.is_available():
+    print('device:', torch.cuda.get_device_name(0))
+PY
+```
+
+If this prints `imports ok` and, on a GPU node, reports a CUDA device, the environment is ready to use.
+
+### 4.4 Activate the environment
+
+To use plain `python` (instead of the full path) and have the environment's packages available directly in your shell:
+
+```bash
+source /opt/envs/sprintr_mill-v1/bin/activate
+```
+
+---
+
+## 5. Install a Jupyter Kernel (for Notebooks)
+
+If you want to use this environment inside a Jupyter notebook, register it as a kernel:
+
+```bash
+/opt/envs/sprintr_mill-v1/bin/python -m ipykernel install --user \
+  --name sprintr_mill-v1 \
+  --display-name "SPRINTR_MIL (v1)"
+```
+
+`--name` is the internal kernel identifier; `--display-name` is what shows up in the Jupyter interface's kernel picker.
+
+---
+
+## 6. Available Environment Definitions
+
+Environment `.yml` files are kept in the **`conda_environments`** folder:
+
+| File | Environment name | Purpose |
+|---|---|---|
+| `histomil.yaml` | `sprintr_mill` | Training environment |
+| `valis_registration.yaml` | `sprintr_valis_reg` | Same as above, plus VALIS registration support |
+
+---
+
+## 7. Adding Your Own Local Package/Repository to the Environment
+
+Sometimes you have your own local code (e.g. a package like `mil`) that you want to be able to `import` from any notebook or script using this environment — without formally installing it as a pip package.
+
+The simplest approach is to add a `.pth` file pointing to your code's location. Conda/Python automatically reads `.pth` files in the environment's `site-packages` directory and adds each listed path to the import search path.
+
+```bash
+echo "/opt/fovea/simplified_histomil" > $(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")/mil.pth
+```
+
+**Before running this:**
+- Replace `/opt/fovea/simplified_histomil` with the path to the directory containing the module you want to import.
+- Replace `mil.pth` with a name of your choice — the filename itself doesn't matter as long as it ends in `.pth`, but naming it after the module keeps things clear.
+
+After running this, `import mil` (or whatever your module is called) will work from any notebook or script — as long as it's using the **same kernel/environment** where you ran this command.
+
+> **Alternative approach:** you can also package your code properly using **hatchling** (already available in the build environment) and install it with pip in editable mode. This is more robust for larger or evolving codebases, but the `.pth` file approach above is simpler and sufficient for most cases.
+
+---
+
+## Quick Reference: Full Workflow Summary
+
+```bash
+# 1. On a non-air-gapped x86 machine
+conda env create -f environment.yml
+conda activate sprintr_mill
+conda install -c conda-forge conda-pack
+conda-pack -n sprintr_mill -o sprintr_mill-v1.tar.gz
+
+# 2. Upload to AIDA shared storage
+scp sprintr_mill-v1.tar.gz login:/data/datasets/envs
+
+# 3. On each AIDA node that needs it
+mkdir -p /opt/envs/sprintr_mill-v1
+tar -xzf sprintr_mill-v1.tar.gz -C /opt/envs/sprintr_mill-v1
+/opt/envs/sprintr_mill-v1/bin/python /opt/envs/sprintr_mill-v1/bin/conda-unpack
+source /opt/envs/sprintr_mill-v1/bin/activate
+```
+
+## OLD GUIDE
 **Prerequisites**
 Conda installed on a non air-gapped system, preferably x86 architecture. If you are on Apple Silicon you have to find a way to build the Conda environment for x86, e.g. via Docker, or find an x86 machine.
 
@@ -49,7 +263,7 @@ tar -xzf sprintr_mill-v1.tar.gz -C /opt/envs/sprintr_mill-v1
 Use conda-unpack to unpack and set up the paths to make the environment work
 
 ```
-/opt/envs/sprintr_mill-v1/bin/python /opt/envs/sprintr_mill-v1/bin/conda-unpack
+  /opt/envs/sprintr_mill-v1/bin/python /opt/envs/sprintr_mill-v1/bin/conda-unpack
 ```
 
 This needs to be done on a per-node basis. The reason is that the Python environment should be stored on the node's local disk. In the future, Ansible should have functionality for this.

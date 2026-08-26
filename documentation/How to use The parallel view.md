@@ -1,7 +1,7 @@
 
 the plugin name must be inside the tissuumaps plugin folder
 
-ParallelViewManaged.js
+ParallelViewInteractive.js
 
 ```
 "settings": [
@@ -9,7 +9,7 @@ ParallelViewManaged.js
       "module": "pluginUtils",
       "function": "startPlugin",
       "value": [
-        "Parallel_view_new",
+        "Parallel_view_interactive",
         [
           { "name": "_parallel", "value": true },
           { "name": "_parallelOverlay1", "value": true },
@@ -29,7 +29,3 @@ ParallelViewManaged.js
 Settings for the plugin, to load the plugin the startPlugin needs to be set in settings.
 Keep Mode to normal, this is the blending mode
 
-
-Hur är den här average ki 2?? p39 b2 ki67
-umea,p0039,b02,Patient_71,5.0,1.0,0.0,2.0 är quartile score, har verifierat så det är samma som Marco har använt. 
-![[p0039-b02-ki67-quartile-score-check.png]]
