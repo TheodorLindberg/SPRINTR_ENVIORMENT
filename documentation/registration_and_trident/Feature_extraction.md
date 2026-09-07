@@ -61,4 +61,11 @@ cd /opt/fovea/new/TRIDENT
 python run_batch_of_slides.py  --wsi_dir /data/results/scans/elastic/new --job_dir /data/results/alvis/trident/new/elastic/  --patch_encoder uni_v2 --patch_size 256 --mag 20 --segmenter otsu --gpus 0 0 0 --task all
 ```
 
+Since AIDA is airgapped, the models can't be downloaded directly from huggingface,
+the easiest and simpliest way to use a local model is via 
+--patch_encoder_ckpt_path /embedding_models/models/gigapath/pytorch_model.bin 
+
+
+
+
 A tip above is to run ```screen``` before the above command, then after you can de attatch, mening if the ssh session drops it will keep running until compleate or the node shuts down,(now 2 hours after ssh connection drops )
